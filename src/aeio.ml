@@ -199,7 +199,7 @@ let force st sr k =
 
 (* Mutex *)
 
-let create () = ref Unlocked
+let create_mutex () = ref Unlocked
 
 let with_lock m f =
   lock m;

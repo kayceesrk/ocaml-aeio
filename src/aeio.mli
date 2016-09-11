@@ -35,7 +35,7 @@ val run : (unit -> unit) -> unit
 
 type mutex
 
-val create : unit -> mutex
+val create_mutex : unit -> mutex
 
 val lock   : mutex -> unit
 
