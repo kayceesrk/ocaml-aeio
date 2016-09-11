@@ -1,0 +1,7 @@
+description = "Asynchronous effect-based IO"
+version = "%%VERSION_NUM%%"
+requires = ""
+archive(byte) = "aeio.cma"
+archive(native) = "aeio.cmxa"
+plugin(byte) = "aeio.cma"
+plugin(native) = "aeio.cmxs"
