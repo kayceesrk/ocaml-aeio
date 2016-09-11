@@ -32,11 +32,11 @@ open Printexc
 open Printf
 
 let send sock str =
-  let len = String.length str in
+  let len = Bytes.length str in
   let total = ref 0 in
   (try
       while !total < len do
-        let write_count = Aio.send sock str !total (len - !total) [] in
+        let write_count = Aeio.send sock str !total (len - !total) [] in
         total := write_count + !total
         done
     with _ -> ()
@@ -46,10 +46,10 @@ let send sock str =
 let recv sock maxlen =
   let str = Bytes.create maxlen in
   let recvlen =
-    try Aio.recv sock str 0 maxlen []
+    try Aeio.recv sock str 0 maxlen []
     with _ -> 0
   in
-  String.sub str 0 recvlen
+  Bytes.sub str 0 recvlen
 
 let close sock =
   try Unix.shutdown sock Unix.SHUTDOWN_ALL
@@ -65,7 +65,7 @@ let string_of_sockaddr = function
 let rec echo_server sock addr =
   try
     let data = recv sock 1024 in
-    if String.length data > 0 then
+    if Bytes.length data > 0 then
       (ignore (send sock data);
        echo_server sock addr)
     else
@@ -90,11 +90,11 @@ let server () =
   try
     (* Wait for clients, and fork off echo servers. *)
     while true do
-      let client_sock, client_addr = Aio.accept ssock in
+      let client_sock, client_addr = Aeio.accept ssock in
       let cn = string_of_sockaddr client_addr in
       printf "server : client (%s) connected.\n%!" cn;
       Unix.set_nonblock client_sock;
-      ignore @@ Aio.async (echo_server client_sock) client_addr
+      ignore @@ Aeio.async (echo_server client_sock) client_addr
     done
   with
   | _ -> close ssock
@@ -115,7 +115,7 @@ let () =
     | _ -> print_usage_and_exit ()
 
 let () = 
-  Aio.run server
+  Aeio.run server
 
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan

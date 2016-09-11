@@ -4,4 +4,7 @@ true : bin_annot, safe_string, package(bytes)
 <test> : include
 
 <src/aeio.{ml,mli}>: \
-	package(lwt)
+	package(lwt.unix)
+
+<test/echo.*>: \
+	package(lwt.unix)

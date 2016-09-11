@@ -33,6 +33,16 @@ val sleep  : float -> unit
 
 val run : (unit -> unit) -> unit
 
+type mutex
+
+val create : unit -> mutex
+
+val lock   : mutex -> unit
+
+val unlock : mutex -> unit
+
+val with_lock : mutex -> (unit -> 'a) -> 'a
+
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan
 

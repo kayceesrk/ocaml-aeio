@@ -18,12 +18,20 @@ type file_descr = Unix.file_descr
 type sockaddr = Unix.sockaddr
 type msg_flag = Unix.msg_flag
 
-type 'a status =
+type 'a _promise =
   | Done of 'a
   | Error of exn
   | Waiting of ('a, unit) continuation list
 
-type 'a promise = 'a status ref
+type 'a promise = 'a _promise ref
+
+type thread_id = int
+
+type _mutex = 
+  | Locked of thread_id * (thread_id * (unit, unit) continuation) Queue.t
+  | Unlocked 
+
+type mutex = _mutex ref
 
 effect Async : ('a -> 'b) * 'a -> 'b promise
 effect Await : 'a promise -> 'a
@@ -34,10 +42,13 @@ effect Recv : file_descr * bytes * int * int * msg_flag list -> int
 effect Send : file_descr * bytes * int * int * msg_flag list -> int
 effect Sleep : float -> unit
 
+effect Lock : mutex -> unit
+effect Unlock : mutex -> unit
+
 type state =
-  { run_q    : (unit -> unit) Queue.t;
-    read_ht  : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t;
-    write_ht : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t; }
+  { run_q       : (unit -> unit) Queue.t;
+    read_ht     : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t;
+    write_ht    : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t; }
 
 (* Wrappers for performing effects *)
 
@@ -61,6 +72,12 @@ let send fd bus pos len mode =
 
 let sleep timeout =
   perform (Sleep timeout)
+
+let lock m =
+  perform (Lock m)
+
+let unlock m =
+  perform (Unlock m)
 
 (* IO loop *)
 
@@ -180,48 +197,93 @@ let force st sr k =
       sr := Waiting (k::l); 
       schedule st
 
+(* Mutex *)
+
+let create () = ref Unlocked
+
+let with_lock m f =
+  lock m;
+  let res = 
+    try f () 
+    with e -> unlock m; raise e
+  in
+  unlock m;
+  res
+
+let do_lock st tid m k =
+  match !m with
+  | Unlocked -> 
+      m := Locked (tid, Queue.create ());
+      continue k ()
+  | Locked (_,q) ->
+      Queue.push (tid, k) q;
+      schedule st
+
+let do_unlock st tid m k =
+  match !m with
+  | Locked (tid', q) when tid = tid' ->
+      if Queue.is_empty q then
+        m := Unlocked
+      else begin
+        let (ntid, nk) = Queue.pop q in
+        m := Locked (ntid, q);
+        Queue.push (continue nk) st.run_q
+      end;
+      continue k ()
+  | _ -> discontinue k (Failure "Unlock")
+
 (* Main handler loop *)
+
+let tid_counter = ref 0
 
 let init () =
   { run_q = Queue.create ();
     read_ht = Hashtbl.create 13;
     write_ht = Hashtbl.create 13 }
 
+let next_tid () = 
+  let res = !tid_counter in
+  incr tid_counter;
+  res
+
 let run main =
   let st = init () in
-  let rec fork : 'a. state -> 'a promise -> (unit -> 'a) -> unit = fun st sr f ->
-    match f () with
-    | v -> finish st sr v; schedule st
-    | exception e ->
-        print_string (Printexc.to_string e);
-        abort st sr e;
-        schedule st
-    | effect Yield  k ->
-        Queue.push (continue k) st.run_q;
-        schedule st
-    | effect (Async (f, v)) k ->
-        let sr = mk_status () in
-        Queue.push (fun () -> continue k sr) st.run_q;
-        fork st sr (fun () -> f v)
-    | effect (Await sr) k -> force st sr k
-    | effect (Accept fd) k ->
-        let action () = Unix.accept fd in
-        do_syscall st fd Read action k
-    | effect (Recv (fd, buf, pos, len, mode)) k ->
-        let action () = Unix.recv fd buf pos len mode in
-        do_syscall st fd Read action k
-    | effect (Send (fd, buf, pos, len, mode)) k ->
-        let action () = Unix.send fd buf pos len mode in
-        do_syscall st fd Write action k
-    | effect (Sleep t) k ->
-        if t <= 0. then continue k ()
-        else begin
-          block_sleep st t k;
+  let rec fork : 'a. thread_id -> state -> 'a promise -> (unit -> 'a) -> unit = 
+    fun tid st sr f ->
+      match f () with
+      | v -> finish st sr v; schedule st
+      | exception e ->
+          print_string (Printexc.to_string e);
+          abort st sr e;
           schedule st
-        end
+      | effect Yield  k ->
+          Queue.push (continue k) st.run_q;
+          schedule st
+      | effect (Async (f, v)) k ->
+          let sr = mk_status () in
+          Queue.push (fun () -> continue k sr) st.run_q;
+          fork (next_tid ()) st sr (fun () -> f v)
+      | effect (Await sr) k -> force st sr k
+      | effect (Accept fd) k ->
+          let action () = Unix.accept fd in
+          do_syscall st fd Read action k
+      | effect (Recv (fd, buf, pos, len, mode)) k ->
+          let action () = Unix.recv fd buf pos len mode in
+          do_syscall st fd Read action k
+      | effect (Send (fd, buf, pos, len, mode)) k ->
+          let action () = Unix.send fd buf pos len mode in
+          do_syscall st fd Write action k
+      | effect (Sleep t) k ->
+          if t <= 0. then continue k ()
+          else begin
+            block_sleep st t k;
+            schedule st
+          end
+      | effect (Lock m) k -> do_lock st tid m k
+      | effect (Unlock m) k -> do_unlock st tid m k
   in
   let sr = mk_status () in
-  fork st sr main
+  fork (next_tid ()) st sr main
 
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan
