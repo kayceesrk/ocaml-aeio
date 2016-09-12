@@ -43,6 +43,8 @@ val unlock : mutex -> unit
 
 val with_lock : mutex -> (unit -> 'a) -> 'a
 
+module Stream = Aeio_stream
+
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan
 
