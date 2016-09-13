@@ -14,6 +14,7 @@ depends: [
   "topkg" {build} 
 	"lwt" {>= "2.5.1"}
 	"sexplib" {>= "109.53.00"}
+	"camlp4"
 ]
 depopts: []
 build: [
