@@ -15,35 +15,31 @@ type sockaddr = Unix.sockaddr
 type msg_flag = Unix.msg_flag
 
 type 'a promise
+(** The type of promise. *)
 
-val async  : ('a -> 'b) -> 'a -> 'b promise
+val async : ('a -> 'b) -> 'a -> 'b promise
+(** [async f v] spawns a fiber to run [f v] asynchronously. *)
 
-val await  : 'a promise -> 'a 
-(** Raises exception [e] if the promise raises [e]. *)
+val await : 'a promise -> 'a 
+(** Block until the result of a promise is available. Raises exception [e] if the promise raises [e]. *)
 
 val yield  : unit -> unit
+(** Yield control. *)
 
 val accept : file_descr -> file_descr * sockaddr
+(** Similar to Unix.accept, but asynchronous. *)
 
-val recv   : file_descr -> bytes -> int -> int -> msg_flag list -> int
+val recv : file_descr -> bytes -> int -> int -> msg_flag list -> int
+(** Similar to Unix.recv, but asynchronous. *)
 
 val send   : file_descr -> bytes -> int -> int -> msg_flag list -> int
+(** Similar to Unix.send, but asynchronous. *)
 
 val sleep  : float -> unit
+(** [sleep t] suspends the fiber for [t] milliseconds. *)
 
 val run : (unit -> unit) -> unit
-
-type mutex
-
-val create_mutex : unit -> mutex
-
-val lock   : mutex -> unit
-
-val unlock : mutex -> unit
-
-val with_lock : mutex -> (unit -> 'a) -> 'a
-
-module Stream = Aeio_stream
+(** Run the asynchronous program. *)
 
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan

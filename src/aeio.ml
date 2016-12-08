@@ -285,8 +285,6 @@ let run main =
   let sr = mk_status () in
   fork (next_tid ()) st sr main
 
-module Stream = Aeio_stream
-
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan
 
