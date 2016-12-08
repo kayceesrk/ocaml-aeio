@@ -3,10 +3,6 @@ true : bin_annot, safe_string, package(bytes)
 <src> : include
 <test> : include
 
-<src/**>: \
-  package(sexplib), package(sexplib.syntax), package(lwt.unix)
+<src/**>: package(lwt.unix)
 
-<src/aeio_stream.{ml,mli}>: syntax(camlp4o)
-
-<test/echo.*>: package(lwt.unix), package(sexplib)
-	
+<test/echo.*>: package(lwt.unix)
