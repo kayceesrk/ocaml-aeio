@@ -18,6 +18,15 @@ type file_descr = Unix.file_descr
 type sockaddr = Unix.sockaddr
 type msg_flag = Unix.msg_flag
 
+exception Cancelled
+exception Promise_cancelled
+
+type _context = 
+  | Default
+  | Cancelled
+
+type context = _context ref
+
 type 'a _promise =
   | Done of 'a
   | Error of exn
@@ -27,13 +36,7 @@ type 'a promise = 'a _promise ref
 
 type thread_id = int
 
-type _mutex = 
-  | Locked of thread_id * (thread_id * (unit, unit) continuation) Queue.t
-  | Unlocked 
-
-type mutex = _mutex ref
-
-effect Async : ('a -> 'b) * 'a -> 'b promise
+effect Async : ('a -> 'b) * 'a * context option -> 'b promise
 effect Await : 'a promise -> 'a
 effect Yield : unit
 
@@ -42,8 +45,7 @@ effect Recv : file_descr * bytes * int * int * msg_flag list -> int
 effect Send : file_descr * bytes * int * int * msg_flag list -> int
 effect Sleep : float -> unit
 
-effect Lock : mutex -> unit
-effect Unlock : mutex -> unit
+effect Get_context : context
 
 type state =
   { run_q       : (unit -> unit) Queue.t;
@@ -52,8 +54,8 @@ type state =
 
 (* Wrappers for performing effects *)
 
-let async f v =
-  perform (Async (f, v))
+let async ?ctxt f v =
+  perform (Async (f, v, ctxt))
 
 let await p =
   perform (Await p)
@@ -73,11 +75,17 @@ let send fd bus pos len mode =
 let sleep timeout =
   perform (Sleep timeout)
 
-let lock m =
-  perform (Lock m)
+(* Cancellation *)
 
-let unlock m =
-  perform (Unlock m)
+let new_context () = ref Default
+
+let my_context () = perform Get_context
+
+let cancel ctxt = 
+  ctxt := Cancelled;
+  if ctxt = my_context () then raise Cancelled
+
+let live ctxt = !ctxt = Default
 
 (* IO loop *)
 
@@ -197,41 +205,6 @@ let force st sr k =
       sr := Waiting (k::l); 
       schedule st
 
-(* Mutex *)
-
-let create_mutex () = ref Unlocked
-
-let with_lock m f =
-  lock m;
-  let res = 
-    try f () 
-    with e -> unlock m; raise e
-  in
-  unlock m;
-  res
-
-let do_lock st tid m k =
-  match !m with
-  | Unlocked -> 
-      m := Locked (tid, Queue.create ());
-      continue k ()
-  | Locked (_,q) ->
-      Queue.push (tid, k) q;
-      schedule st
-
-let do_unlock st tid m k =
-  match !m with
-  | Locked (tid', q) when tid = tid' ->
-      if Queue.is_empty q then
-        m := Unlocked
-      else begin
-        let (ntid, nk) = Queue.pop q in
-        m := Locked (ntid, q);
-        Queue.push (continue nk) st.run_q
-      end;
-      continue k ()
-  | _ -> discontinue k (Failure "Unlock")
-
 (* Main handler loop *)
 
 let tid_counter = ref 0
@@ -248,42 +221,53 @@ let next_tid () =
 
 let run main =
   let st = init () in
-  let rec fork : 'a. thread_id -> state -> 'a promise -> (unit -> 'a) -> unit = 
-    fun tid st sr f ->
+  let rec fork : 'a. context -> thread_id -> state -> 'a promise -> (unit -> 'a) -> unit = 
+    fun ctxt tid st sr f ->
       match f () with
       | v -> finish st sr v; schedule st
+      | exception Cancelled ->
+          abort st sr Promise_cancelled;
+          schedule st
       | exception e ->
-          print_string (Printexc.to_string e);
           abort st sr e;
           schedule st
-      | effect Yield  k ->
+      | effect Yield k when live ctxt ->
           Queue.push (continue k) st.run_q;
           schedule st
-      | effect (Async (f, v)) k ->
+      | effect (Async (f, v, c)) k when live ctxt->
+          let ctxt = 
+            match c with 
+            | None -> ctxt
+            | Some ctxt -> ctxt
+          in
           let sr = mk_status () in
           Queue.push (fun () -> continue k sr) st.run_q;
-          fork (next_tid ()) st sr (fun () -> f v)
-      | effect (Await sr) k -> force st sr k
-      | effect (Accept fd) k ->
+          fork ctxt (next_tid ()) st sr (fun () -> f v)
+      | effect (Await sr) k when live ctxt -> 
+          force st sr k
+      | effect (Accept fd) k when live ctxt ->
           let action () = Unix.accept fd in
           do_syscall st fd Read action k
-      | effect (Recv (fd, buf, pos, len, mode)) k ->
+      | effect (Recv (fd, buf, pos, len, mode)) k when live ctxt ->
           let action () = Unix.recv fd buf pos len mode in
           do_syscall st fd Read action k
-      | effect (Send (fd, buf, pos, len, mode)) k ->
+      | effect (Send (fd, buf, pos, len, mode)) k when live ctxt ->
           let action () = Unix.send fd buf pos len mode in
           do_syscall st fd Write action k
-      | effect (Sleep t) k ->
+      | effect (Sleep t) k when live ctxt ->
           if t <= 0. then continue k ()
           else begin
             block_sleep st t k;
             schedule st
           end
-      | effect (Lock m) k -> do_lock st tid m k
-      | effect (Unlock m) k -> do_unlock st tid m k
+      | effect Get_context k when live ctxt ->
+          continue k ctxt
+      | effect e k when not(live ctxt) ->
+          discontinue k Cancelled
   in
   let sr = mk_status () in
-  fork (next_tid ()) st sr main
+  let ctxt = new_context () in
+  fork ctxt (next_tid ()) st sr main
 
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan

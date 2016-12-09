@@ -17,13 +17,36 @@ type msg_flag = Unix.msg_flag
 type 'a promise
 (** The type of promise. *)
 
-val async : ('a -> 'b) -> 'a -> 'b promise
-(** [async f v] spawns a fiber to run [f v] asynchronously. *)
+type context 
+(** The type of cancellation context. *)
+
+exception Cancelled
+(** Raised in the cancelled fiber. Allows the fiber to dispose resources
+    cleanly. *)
+
+exception Promise_cancelled
+(** Raised at {!await} if the promise was cancelled. *)
+
+val new_context : unit -> context 
+(** Creates a new cancellation context. *)
+
+val my_context : unit -> context
+(** Return the current cancellation context. *)
+
+val cancel : context -> unit
+(** Cancel the context. *)
+
+val async : ?ctxt:context-> ('a -> 'b) -> 'a -> 'b promise
+(** [async f v] spawns a fiber to run [f v] asynchronously. If no cancellation
+    context was provided, then the new fiber shares the cancelallation context
+    of the caller. *)
 
 val await : 'a promise -> 'a 
-(** Block until the result of a promise is available. Raises exception [e] if the promise raises [e]. *)
+(** Block until the result of a promise is available. Raises exception [e] if
+    the promise raises [e]. 
+    @raise Promise_cancelled if the promise was cancelled. *)
 
-val yield  : unit -> unit
+val yield : unit -> unit
 (** Yield control. *)
 
 val accept : file_descr -> file_descr * sockaddr
@@ -32,10 +55,10 @@ val accept : file_descr -> file_descr * sockaddr
 val recv : file_descr -> bytes -> int -> int -> msg_flag list -> int
 (** Similar to Unix.recv, but asynchronous. *)
 
-val send   : file_descr -> bytes -> int -> int -> msg_flag list -> int
+val send : file_descr -> bytes -> int -> int -> msg_flag list -> int
 (** Similar to Unix.send, but asynchronous. *)
 
-val sleep  : float -> unit
+val sleep : float -> unit
 (** [sleep t] suspends the fiber for [t] milliseconds. *)
 
 val run : (unit -> unit) -> unit
