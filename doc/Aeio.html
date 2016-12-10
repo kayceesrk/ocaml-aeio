@@ -6,6 +6,7 @@
 <link rel="Start" href="index.html">
 <link rel="Up" href="index.html">
 <link title="Index of types" rel=Appendix href="index_types.html">
+<link title="Index of exceptions" rel=Appendix href="index_exceptions.html">
 <link title="Index of values" rel=Appendix href="index_values.html">
 <link title="Index of modules" rel=Appendix href="index_modules.html">
 <link title="Aeio" rel="Chapter" href="Aeio.html"><title>Aeio</title>
@@ -19,7 +20,7 @@
 Asynchronous effect-based IO
 <p>
 
-    <em>0.1.0 — <a href="https://github.com/kayceesrk/ocaml-aeio ">homepage</a></em><br>
+    <em>0.2.0 — <a href="https://github.com/kayceesrk/ocaml-aeio ">homepage</a></em><br>
 </div>
 <hr width="100%">
 
@@ -38,12 +39,45 @@ The type of promise.<br>
 </div>
 
 
-<pre><span id="VALasync"><span class="keyword">val</span> async</span> : <code class="type">('a -> 'b) -> 'a -> 'b <a href="Aeio.html#TYPEpromise">promise</a></code></pre><div class="info ">
-<code class="code">async f v</code> spawns a fiber to run <code class="code">f v</code> asynchronously.<br>
+<pre><span id="TYPEcontext"><span class="keyword">type</span> <code class="type"></code>context</span> </pre>
+<div class="info ">
+The type of cancellation context.<br>
+</div>
+
+
+<pre><span id="EXCEPTIONCancelled"><span class="keyword">exception</span> Cancelled</span></pre>
+<div class="info ">
+Raised in the cancelled fiber. Allows the fiber to dispose resources
+    cleanly.<br>
+</div>
+
+<pre><span id="EXCEPTIONPromise_cancelled"><span class="keyword">exception</span> Promise_cancelled</span></pre>
+<div class="info ">
+Raised at <a href="Aeio.html#VALawait"><code class="code"><span class="constructor">Aeio</span>.await</code></a> if the promise was cancelled.<br>
+</div>
+
+<pre><span id="VALnew_context"><span class="keyword">val</span> new_context</span> : <code class="type">unit -> <a href="Aeio.html#TYPEcontext">context</a></code></pre><div class="info ">
+Creates a new cancellation context.<br>
+</div>
+
+<pre><span id="VALmy_context"><span class="keyword">val</span> my_context</span> : <code class="type">unit -> <a href="Aeio.html#TYPEcontext">context</a></code></pre><div class="info ">
+Return the current cancellation context.<br>
+</div>
+
+<pre><span id="VALcancel"><span class="keyword">val</span> cancel</span> : <code class="type"><a href="Aeio.html#TYPEcontext">context</a> -> unit</code></pre><div class="info ">
+Cancel the context.<br>
+</div>
+
+<pre><span id="VALasync"><span class="keyword">val</span> async</span> : <code class="type">?ctxt:<a href="Aeio.html#TYPEcontext">context</a> -> ('a -> 'b) -> 'a -> 'b <a href="Aeio.html#TYPEpromise">promise</a></code></pre><div class="info ">
+<code class="code">async f v</code> spawns a fiber to run <code class="code">f v</code> asynchronously. If no cancellation
+    context was provided, then the new fiber shares the cancelallation context
+    of the caller.<br>
 </div>
 
 <pre><span id="VALawait"><span class="keyword">val</span> await</span> : <code class="type">'a <a href="Aeio.html#TYPEpromise">promise</a> -> 'a</code></pre><div class="info ">
-Block until the result of a promise is available. Raises exception <code class="code">e</code> if the promise raises <code class="code">e</code>.<br>
+Block until the result of a promise is available. Raises exception <code class="code">e</code> if
+    the promise raises <code class="code">e</code>.<br>
+<b>Raises</b> <code>Promise_cancelled</code> if the promise was cancelled.<br>
 </div>
 
 <pre><span id="VALyield"><span class="keyword">val</span> yield</span> : <code class="type">unit -> unit</code></pre><div class="info ">

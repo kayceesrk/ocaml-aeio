@@ -3,6 +3,7 @@
 <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
 <link rel="Start" href="index.html">
 <link title="Index of types" rel=Appendix href="index_types.html">
+<link title="Index of exceptions" rel=Appendix href="index_exceptions.html">
 <link title="Index of values" rel=Appendix href="index_values.html">
 <link title="Index of modules" rel=Appendix href="index_modules.html">
 <link title="Aeio" rel="Chapter" href="Aeio.html"><title>Aeio</title>
@@ -13,7 +14,13 @@
 &nbsp;&nbsp;<span class="keyword">type</span>&nbsp;sockaddr&nbsp;=&nbsp;<span class="constructor">Unix</span>.sockaddr<br>
 &nbsp;&nbsp;<span class="keyword">type</span>&nbsp;msg_flag&nbsp;=&nbsp;<span class="constructor">Unix</span>.msg_flag<br>
 &nbsp;&nbsp;<span class="keyword">type</span>&nbsp;<span class="keywordsign">'</span>a&nbsp;promise<br>
-&nbsp;&nbsp;<span class="keyword">val</span>&nbsp;async&nbsp;:&nbsp;(<span class="keywordsign">'</span>a&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="keywordsign">'</span>b)&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="keywordsign">'</span>a&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="keywordsign">'</span>b&nbsp;<span class="constructor">Aeio</span>.promise<br>
+&nbsp;&nbsp;<span class="keyword">type</span>&nbsp;context<br>
+&nbsp;&nbsp;<span class="keyword">exception</span>&nbsp;<span class="constructor">Cancelled</span><br>
+&nbsp;&nbsp;<span class="keyword">exception</span>&nbsp;<span class="constructor">Promise_cancelled</span><br>
+&nbsp;&nbsp;<span class="keyword">val</span>&nbsp;new_context&nbsp;:&nbsp;unit&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="constructor">Aeio</span>.context<br>
+&nbsp;&nbsp;<span class="keyword">val</span>&nbsp;my_context&nbsp;:&nbsp;unit&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="constructor">Aeio</span>.context<br>
+&nbsp;&nbsp;<span class="keyword">val</span>&nbsp;cancel&nbsp;:&nbsp;<span class="constructor">Aeio</span>.context&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;unit<br>
+&nbsp;&nbsp;<span class="keyword">val</span>&nbsp;async&nbsp;:&nbsp;?ctxt:<span class="constructor">Aeio</span>.context&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;(<span class="keywordsign">'</span>a&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="keywordsign">'</span>b)&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="keywordsign">'</span>a&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="keywordsign">'</span>b&nbsp;<span class="constructor">Aeio</span>.promise<br>
 &nbsp;&nbsp;<span class="keyword">val</span>&nbsp;await&nbsp;:&nbsp;<span class="keywordsign">'</span>a&nbsp;<span class="constructor">Aeio</span>.promise&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="keywordsign">'</span>a<br>
 &nbsp;&nbsp;<span class="keyword">val</span>&nbsp;yield&nbsp;:&nbsp;unit&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;unit<br>
 &nbsp;&nbsp;<span class="keyword">val</span>&nbsp;accept&nbsp;:&nbsp;<span class="constructor">Aeio</span>.file_descr&nbsp;<span class="keywordsign">-&gt;</span>&nbsp;<span class="constructor">Aeio</span>.file_descr&nbsp;*&nbsp;<span class="constructor">Aeio</span>.sockaddr<br>
