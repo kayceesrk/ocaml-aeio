@@ -21,16 +21,20 @@ type msg_flag = Unix.msg_flag
 exception Cancelled
 exception Promise_cancelled
 
+type cleanup = (unit -> unit) ref
+
+type cont = Cont : ('a, unit) continuation -> cont
+
 type _context = 
-  | Default
-  | Cancelled
+  | Default   : cont Lwt_sequence.t -> _context
+  | Cancelled : _context
 
 type context = _context ref
 
 type 'a _promise =
-  | Done of 'a
-  | Error of exn
-  | Waiting of ('a, unit) continuation list
+  | Done    of 'a
+  | Error   of exn
+  | Waiting of (cont Lwt_sequence.node * ('a, unit) continuation) list
 
 type 'a promise = 'a _promise ref
 
@@ -41,11 +45,12 @@ effect Await : 'a promise -> 'a
 effect Yield : unit
 
 effect Accept : file_descr -> (file_descr * sockaddr)
-effect Recv : file_descr * bytes * int * int * msg_flag list -> int
-effect Send : file_descr * bytes * int * int * msg_flag list -> int
-effect Sleep : float -> unit
+effect Recv   : file_descr * bytes * int * int * msg_flag list -> int
+effect Send   : file_descr * bytes * int * int * msg_flag list -> int
+effect Sleep  : float -> unit
 
-effect Get_context : context
+effect Get_context    : context
+effect Cancel_context : context -> unit
 
 type state =
   { run_q       : (unit -> unit) Queue.t;
@@ -77,15 +82,32 @@ let sleep timeout =
 
 (* Cancellation *)
 
-let new_context () = ref Default
+let new_context () = ref (Default (Lwt_sequence.create ()))
 
 let my_context () = perform Get_context
 
-let cancel ctxt = 
-  ctxt := Cancelled;
-  if ctxt = my_context () then raise Cancelled
+let cancel ctxt = perform (Cancel_context ctxt)
 
-let live ctxt = !ctxt = Default
+let handle_cancel st k their_ctxt my_ctxt = 
+  match !their_ctxt with
+  | Default l ->
+      their_ctxt := Cancelled;
+      Lwt_sequence.iter_l (fun (Cont k) -> Queue.push (fun () -> 
+        discontinue k Cancelled) st.run_q) l;
+      if their_ctxt = my_ctxt then 
+        discontinue k Cancelled
+      else continue k ()
+  | Cancelled -> ()
+
+let live ctxt = 
+  match !ctxt with
+  | Default _ -> true
+  | Cancelled -> false 
+
+let wait_on_context ctxt k =
+  match !ctxt with
+  | Default s -> Lwt_sequence.add_r (Cont k) s
+  | Cancelled -> failwith "Impossible happened"
 
 (* IO loop *)
 
@@ -143,8 +165,19 @@ let poll_syscall fd kind action =
   | Sys_blocked_io -> None
 
 let dummy = Lwt_sequence.add_r ignore (Lwt_sequence.create ())
+let dummy_cleanup () = ()
 
-let rec block_syscall st fd kind action k =
+let maybe_continue ctxt_node k v =
+  Lwt_sequence.remove ctxt_node;
+  try continue k v with
+  | Invalid_argument _ -> ()
+
+let maybe_discontinue ctxt_node k v =
+  Lwt_sequence.remove ctxt_node;
+  try discontinue k v with
+  | Invalid_argument _ -> ()
+
+let rec block_syscall cleanup ctxt_node st fd kind action k =
   let node = ref dummy in
   let ht,register = 
     match kind with
@@ -162,20 +195,24 @@ let rec block_syscall st fd kind action k =
   node := Lwt_sequence.add_r (fun () ->
     Lwt_sequence.remove !node;
     match poll_syscall fd kind action with
-    | Some res -> Queue.push (fun () -> continue k res) st.run_q
-    | None -> block_syscall st fd kind action k) seq
+    | Some res -> 
+        cleanup := dummy_cleanup;
+        Queue.push (fun () -> maybe_continue ctxt_node k res) st.run_q
+    | None -> block_syscall cleanup ctxt_node st fd kind action k) seq;
+  (* This needs to be run if the thread was cancelled. *)
+  cleanup := (fun () -> Lwt_sequence.remove !node)
 
-let do_syscall st fd kind action k =
+let do_syscall cleanup ctxt_node st fd kind action k =
   match poll_syscall fd kind action with
-  | Some res -> continue k res
+  | Some res -> maybe_continue ctxt_node k res
   | None -> 
-      block_syscall st fd kind action k;
+      block_syscall cleanup ctxt_node st fd kind action k;
       schedule st
 
-let block_sleep st delay k =
+let block_sleep ctxt_node st delay k =
   ignore @@ Lwt_engine.on_timer delay false (fun ev -> 
     Lwt_engine.stop_event ev; 
-    Queue.push (continue k) st.run_q)
+    Queue.push (maybe_continue ctxt_node k) st.run_q)
 
 (* Promises *)
 
@@ -185,24 +222,25 @@ let finish st sr v =
   match !sr with
   | Waiting l ->
       sr := Done v;
-      List.iter (fun k ->
-        Queue.push (fun () -> continue k v) st.run_q) l
+      List.iter (fun (ctxt_node, k) ->
+        Queue.push (fun () -> maybe_continue ctxt_node k v) st.run_q) l
   | _ -> failwith "Impossible: finish"
 
 let abort st sr e =
   match !sr with
   | Waiting l ->
       sr := Error e;
-      List.iter (fun k ->
-        Queue.push (fun () -> discontinue k e) st.run_q) l
+      List.iter (fun (ctxt_node, k) ->
+        Queue.push (fun () -> maybe_discontinue ctxt_node k e) st.run_q) l
   | _ -> failwith "Impossible: abort"
 
-let force st sr k =
+let force ctxt st sr k =
   match !sr with
   | Done v -> continue k v
   | Error e -> discontinue k e
   | Waiting l -> 
-      sr := Waiting (k::l); 
+      let ctxt_node = wait_on_context ctxt k in
+      sr := Waiting ((ctxt_node,k)::l); 
       schedule st
 
 (* Main handler loop *)
@@ -221,53 +259,65 @@ let next_tid () =
 
 let run main =
   let st = init () in
-  let rec fork : 'a. context -> thread_id -> state -> 'a promise -> (unit -> 'a) -> unit = 
-    fun ctxt tid st sr f ->
+  let rec fork : 'a. cleanup -> context -> thread_id -> state -> 'a promise -> (unit -> 'a) -> unit = 
+    fun cleanup ctxt tid st sr f ->
       match f () with
       | v -> finish st sr v; schedule st
       | exception Cancelled ->
+          (* Necessary for removing event from event queue. *)
+          !cleanup (); 
           abort st sr Promise_cancelled;
           schedule st
       | exception e ->
           abort st sr e;
           schedule st
       | effect Yield k when live ctxt ->
-          Queue.push (continue k) st.run_q;
+          let ctxt_node = wait_on_context ctxt k in
+          Queue.push (maybe_continue ctxt_node k) st.run_q;
           schedule st
       | effect (Async (f, v, c)) k when live ctxt->
+          let ctxt_node = wait_on_context ctxt k in
           let ctxt = 
             match c with 
             | None -> ctxt
             | Some ctxt -> ctxt
           in
           let sr = mk_status () in
-          Queue.push (fun () -> continue k sr) st.run_q;
-          fork ctxt (next_tid ()) st sr (fun () -> f v)
+          Queue.push (fun () -> maybe_continue ctxt_node k sr) st.run_q;
+          fork (ref dummy_cleanup) ctxt (next_tid ()) st sr (fun () -> f v)
       | effect (Await sr) k when live ctxt -> 
-          force st sr k
+          force ctxt st sr k
       | effect (Accept fd) k when live ctxt ->
+          let ctxt_node = wait_on_context ctxt k in
           let action () = Unix.accept fd in
-          do_syscall st fd Read action k
+          do_syscall cleanup ctxt_node st fd Read action k
       | effect (Recv (fd, buf, pos, len, mode)) k when live ctxt ->
+          let Default l = !ctxt in 
+          let ctxt_node = wait_on_context ctxt k in
           let action () = Unix.recv fd buf pos len mode in
-          do_syscall st fd Read action k
+          do_syscall cleanup ctxt_node st fd Read action k
       | effect (Send (fd, buf, pos, len, mode)) k when live ctxt ->
+          let ctxt_node = wait_on_context ctxt k in
           let action () = Unix.send fd buf pos len mode in
-          do_syscall st fd Write action k
+          do_syscall cleanup ctxt_node st fd Write action k
       | effect (Sleep t) k when live ctxt ->
           if t <= 0. then continue k ()
           else begin
-            block_sleep st t k;
+            let ctxt_node = wait_on_context ctxt k in
+            block_sleep ctxt_node st t k;
             schedule st
           end
       | effect Get_context k when live ctxt ->
           continue k ctxt
+      | effect (Cancel_context ctxt') k when live ctxt ->
+          handle_cancel st k ctxt' ctxt
       | effect e k when not(live ctxt) ->
           discontinue k Cancelled
   in
   let sr = mk_status () in
   let ctxt = new_context () in
-  fork ctxt (next_tid ()) st sr main
+  let cleanup = ref dummy_cleanup in
+  fork cleanup ctxt (next_tid ()) st sr main
 
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan

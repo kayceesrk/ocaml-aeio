@@ -57,22 +57,34 @@ let string_of_sockaddr = function
 
 (* Repeat what the client says until the client goes away. *)
 let echo_server sock addr =
-  let rec loop () = 
+  let channel_name = string_of_sockaddr addr in
+  let rec loop () =
     let data = recv sock 1024 in
-    if Bytes.length data > 0 then
-      (ignore (send sock data);
-       loop ())
-    else
-      let cn = string_of_sockaddr addr in
-      (printf "echo_server : client (%s) disconnected.\n%!" cn;
+    if Bytes.length data > 0 then begin
+      if Bytes.length data = 2 then
+        Aeio.cancel (Aeio.my_context ())
+      else begin
+        printf "echo_server : echo client=%s msg=%s%!" channel_name @@ Bytes.to_string data;
+        ignore (send sock data);
+        loop ()
+      end
+    end else
+      (printf "echo_server : client=%s disconnected.\n%!" channel_name;
        close sock)
   in
-  try loop () with _ -> close sock
+  try loop ()
+  with e ->
+    begin if e = Aeio.Cancelled then 
+      Printf.printf "echo_server : Server connection to client=%s cancelling..\n%!" channel_name;
+    end;
+    close sock;
+    raise e
 
 let server () =
   (* Server listens on localhost at 9301 *)
   let addr, port = Unix.inet_addr_loopback, 9301 in
   printf "Echo server listening on 127.0.0.1:%d\n%!" port;
+  printf "Connect as `telnet localhost 9301`\n%!";
   let saddr = Unix.ADDR_INET (addr, port) in
   let ssock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   (* SO_REUSEADDR so we can restart the server quickly. *)
@@ -82,16 +94,22 @@ let server () =
   (* Socket is non-blocking *)
   Unix.set_nonblock ssock;
   try
+    let ctxt = Aeio.my_context () in
     (* Wait for clients, and fork off echo servers. *)
     while true do
       let client_sock, client_addr = Aeio.accept ssock in
       let cn = string_of_sockaddr client_addr in
       printf "server : client (%s) connected.\n%!" cn;
       Unix.set_nonblock client_sock;
-      ignore @@ Aeio.async (echo_server client_sock) client_addr
+      ignore @@ Aeio.async ~ctxt (echo_server client_sock) client_addr
     done
   with
-  | _ -> close ssock
+  | e -> 
+      begin if e = Aeio.Cancelled then 
+        Printf.printf "echo_server : server main thread cancelling..\n%!";
+      end;
+      close ssock;
+      raise e
 
 (* Main *)
 
