@@ -52,10 +52,15 @@ effect Sleep  : float -> unit
 effect Get_context    : context
 effect Cancel_context : context -> unit
 
-type state =
-  { run_q       : (unit -> unit) Queue.t;
-    read_ht     : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t;
-    write_ht    : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t; }
+type global_state =
+  { run_q    : (unit -> unit) Queue.t;
+    read_ht  : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t;
+    write_ht : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t; }
+
+type local_state = 
+  { context   : context;
+    cleanup   : cleanup;
+    thread_id : thread_id }
 
 (* Wrappers for performing effects *)
 
@@ -88,12 +93,12 @@ let my_context () = perform Get_context
 
 let cancel ctxt = perform (Cancel_context ctxt)
 
-let handle_cancel st k their_ctxt my_ctxt = 
+let handle_cancel gst k their_ctxt my_ctxt = 
   match !their_ctxt with
   | Default l ->
       their_ctxt := Cancelled;
       Lwt_sequence.iter_l (fun (Cont k) -> Queue.push (fun () -> 
-        discontinue k Cancelled) st.run_q) l;
+        discontinue k Cancelled) gst.run_q) l;
       if their_ctxt = my_ctxt then 
         discontinue k Cancelled
       else continue k ()
@@ -111,7 +116,7 @@ let wait_on_context ctxt k =
 
 (* IO loop *)
 
-let clean st =
+let clean gst =
   let clean_ht ht = 
     let fd_list = 
       (* XXX: Use Hashtbl.filter_map_inplace *)
@@ -122,23 +127,23 @@ let clean st =
     in
     List.iter (fun fd -> Hashtbl.remove ht fd) fd_list
   in
-  clean_ht st.read_ht;
-  clean_ht st.write_ht
+  clean_ht gst.read_ht;
+  clean_ht gst.write_ht
 
-let rec schedule st =
-  if Queue.is_empty st.run_q then (* No runnable threads *)
-    if Hashtbl.length st.read_ht = 0 &&
-       Hashtbl.length st.write_ht = 0 &&
+let rec schedule gst =
+  if Queue.is_empty gst.run_q then (* No runnable threads *)
+    if Hashtbl.length gst.read_ht = 0 &&
+       Hashtbl.length gst.write_ht = 0 &&
        Lwt_engine.timer_count () = 0 then () (* We are done *)
-    else perform_io st
+    else perform_io gst
   else (* Still have runnable threads *)
-    Queue.pop st.run_q ()
+    Queue.pop gst.run_q ()
 
-and perform_io st =
+and perform_io gst =
   Lwt_engine.iter true;
   (* TODO: Cleanup should be performed laziyly for performance. *)
-  clean st;
-  schedule st
+  clean gst;
+  schedule gst
 
 (* Syscall wrappers *)
 
@@ -177,12 +182,12 @@ let maybe_discontinue ctxt_node k v =
   try discontinue k v with
   | Invalid_argument _ -> ()
 
-let rec block_syscall cleanup ctxt_node st fd kind action k =
+let rec block_syscall cleanup ctxt_node gst fd kind action k =
   let node = ref dummy in
   let ht,register = 
     match kind with
-    | Read -> st.read_ht, register_readable
-    | Write -> st.write_ht, register_writable
+    | Read -> gst.read_ht, register_readable
+    | Write -> gst.write_ht, register_writable
   in
   let seq = 
     try snd @@ Hashtbl.find ht fd
@@ -197,51 +202,51 @@ let rec block_syscall cleanup ctxt_node st fd kind action k =
     match poll_syscall fd kind action with
     | Some res -> 
         cleanup := dummy_cleanup;
-        Queue.push (fun () -> maybe_continue ctxt_node k res) st.run_q
-    | None -> block_syscall cleanup ctxt_node st fd kind action k) seq;
+        Queue.push (fun () -> maybe_continue ctxt_node k res) gst.run_q
+    | None -> block_syscall cleanup ctxt_node gst fd kind action k) seq;
   (* This needs to be run if the thread was cancelled. *)
   cleanup := (fun () -> Lwt_sequence.remove !node)
 
-let do_syscall cleanup ctxt_node st fd kind action k =
+let do_syscall cleanup ctxt_node gst fd kind action k =
   match poll_syscall fd kind action with
   | Some res -> maybe_continue ctxt_node k res
   | None -> 
-      block_syscall cleanup ctxt_node st fd kind action k;
-      schedule st
+      block_syscall cleanup ctxt_node gst fd kind action k;
+      schedule gst
 
-let block_sleep ctxt_node st delay k =
+let block_sleep ctxt_node gst delay k =
   ignore @@ Lwt_engine.on_timer delay false (fun ev -> 
     Lwt_engine.stop_event ev; 
-    Queue.push (maybe_continue ctxt_node k) st.run_q)
+    Queue.push (maybe_continue ctxt_node k) gst.run_q)
 
 (* Promises *)
 
-let mk_status () = ref (Waiting [])
+let mk_promise () = ref (Waiting [])
 
-let finish st sr v =
-  match !sr with
+let finish gst prom v =
+  match !prom with
   | Waiting l ->
-      sr := Done v;
+      prom := Done v;
       List.iter (fun (ctxt_node, k) ->
-        Queue.push (fun () -> maybe_continue ctxt_node k v) st.run_q) l
+        Queue.push (fun () -> maybe_continue ctxt_node k v) gst.run_q) l
   | _ -> failwith "Impossible: finish"
 
-let abort st sr e =
-  match !sr with
+let abort gst prom e =
+  match !prom with
   | Waiting l ->
-      sr := Error e;
+      prom := Error e;
       List.iter (fun (ctxt_node, k) ->
-        Queue.push (fun () -> maybe_discontinue ctxt_node k e) st.run_q) l
+        Queue.push (fun () -> maybe_discontinue ctxt_node k e) gst.run_q) l
   | _ -> failwith "Impossible: abort"
 
-let force ctxt st sr k =
-  match !sr with
+let force ctxt gst prom k =
+  match !prom with
   | Done v -> continue k v
   | Error e -> discontinue k e
   | Waiting l -> 
       let ctxt_node = wait_on_context ctxt k in
-      sr := Waiting ((ctxt_node,k)::l); 
-      schedule st
+      prom := Waiting ((ctxt_node,k)::l); 
+      schedule gst
 
 (* Main handler loop *)
 
@@ -258,66 +263,72 @@ let next_tid () =
   res
 
 let run main =
-  let st = init () in
-  let rec fork : 'a. cleanup -> context -> thread_id -> state -> 'a promise -> (unit -> 'a) -> unit = 
-    fun cleanup ctxt tid st sr f ->
+  let gst = init () in
+  let rec fork : 'a. local_state -> global_state -> 'a promise -> (unit -> 'a) -> unit = 
+    fun lst gst prom f ->
       match f () with
-      | v -> finish st sr v; schedule st
+      | v -> finish gst prom v; schedule gst
       | exception Cancelled ->
           (* Necessary for removing event from event queue. *)
-          !cleanup (); 
-          abort st sr Promise_cancelled;
-          schedule st
+          !(lst.cleanup) (); 
+          abort gst prom Promise_cancelled;
+          schedule gst
       | exception e ->
-          abort st sr e;
-          schedule st
-      | effect Yield k when live ctxt ->
-          let ctxt_node = wait_on_context ctxt k in
-          Queue.push (maybe_continue ctxt_node k) st.run_q;
-          schedule st
-      | effect (Async (f, v, c)) k when live ctxt->
-          let ctxt_node = wait_on_context ctxt k in
+          abort gst prom e;
+          schedule gst
+      | effect Yield k when live lst.context ->
+          let ctxt_node = wait_on_context lst.context k in
+          Queue.push (maybe_continue ctxt_node k) gst.run_q;
+          schedule gst
+      | effect (Async (f, v, c)) k when live lst.context ->
+          let ctxt_node = wait_on_context lst.context k in
           let ctxt = 
             match c with 
-            | None -> ctxt
+            | None -> lst.context 
             | Some ctxt -> ctxt
           in
-          let sr = mk_status () in
-          Queue.push (fun () -> maybe_continue ctxt_node k sr) st.run_q;
-          fork (ref dummy_cleanup) ctxt (next_tid ()) st sr (fun () -> f v)
-      | effect (Await sr) k when live ctxt -> 
-          force ctxt st sr k
-      | effect (Accept fd) k when live ctxt ->
-          let ctxt_node = wait_on_context ctxt k in
+          let prom = mk_promise () in
+          Queue.push (fun () -> maybe_continue ctxt_node k prom) gst.run_q;
+          let lst = 
+            {cleanup = ref dummy_cleanup; 
+             context = ctxt; 
+             thread_id = next_tid ()} 
+          in 
+          fork lst gst prom (fun () -> f v)
+      | effect (Await prom) k when live lst.context -> 
+          force lst.context gst prom k
+      | effect (Accept fd) k when live lst.context ->
+          let ctxt_node = wait_on_context lst.context k in
           let action () = Unix.accept fd in
-          do_syscall cleanup ctxt_node st fd Read action k
-      | effect (Recv (fd, buf, pos, len, mode)) k when live ctxt ->
-          let Default l = !ctxt in 
-          let ctxt_node = wait_on_context ctxt k in
+          do_syscall lst.cleanup ctxt_node gst fd Read action k
+      | effect (Recv (fd, buf, pos, len, mode)) k when live lst.context ->
+          let Default l = !(lst.context) in 
+          let ctxt_node = wait_on_context lst.context k in
           let action () = Unix.recv fd buf pos len mode in
-          do_syscall cleanup ctxt_node st fd Read action k
-      | effect (Send (fd, buf, pos, len, mode)) k when live ctxt ->
-          let ctxt_node = wait_on_context ctxt k in
+          do_syscall lst.cleanup ctxt_node gst fd Read action k
+      | effect (Send (fd, buf, pos, len, mode)) k when live lst.context ->
+          let ctxt_node = wait_on_context lst.context k in
           let action () = Unix.send fd buf pos len mode in
-          do_syscall cleanup ctxt_node st fd Write action k
-      | effect (Sleep t) k when live ctxt ->
+          do_syscall lst.cleanup ctxt_node gst fd Write action k
+      | effect (Sleep t) k when live lst.context ->
           if t <= 0. then continue k ()
           else begin
-            let ctxt_node = wait_on_context ctxt k in
-            block_sleep ctxt_node st t k;
-            schedule st
+            let ctxt_node = wait_on_context lst.context k in
+            block_sleep ctxt_node gst t k;
+            schedule gst
           end
-      | effect Get_context k when live ctxt ->
-          continue k ctxt
-      | effect (Cancel_context ctxt') k when live ctxt ->
-          handle_cancel st k ctxt' ctxt
-      | effect e k when not(live ctxt) ->
+      | effect Get_context k when live lst.context ->
+          continue k lst.context 
+      | effect (Cancel_context ctxt') k when live lst.context ->
+          handle_cancel gst k ctxt' lst.context 
+      | effect e k when not(live lst.context) ->
           discontinue k Cancelled
   in
-  let sr = mk_status () in
-  let ctxt = new_context () in
+  let prom = mk_promise () in
+  let context = new_context () in
   let cleanup = ref dummy_cleanup in
-  fork cleanup ctxt (next_tid ()) st sr main
+  let lst = {context; cleanup; thread_id = next_tid ()} in
+  fork lst gst prom main
 
 (*---------------------------------------------------------------------------
    Copyright (c) 2016 KC Sivaramakrishnan
