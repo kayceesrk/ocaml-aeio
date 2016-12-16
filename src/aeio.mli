@@ -58,8 +58,34 @@ val recv : file_descr -> bytes -> int -> int -> msg_flag list -> int
 val send : file_descr -> bytes -> int -> int -> msg_flag list -> int
 (** Similar to Unix.send, but asynchronous. *)
 
+val write : file_descr -> bytes -> int -> int -> int
+(** Similar to Unix.write, but asynchronous. *)
+
+val read  : file_descr -> bytes -> int -> int -> int
+(** Similar to Unix.read, but asynchronous. *)
+
 val sleep : float -> unit
 (** [sleep t] suspends the fiber for [t] milliseconds. *)
+
+module Bigstring : sig
+
+  type t = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+  val read : file_descr -> t -> int -> int -> int
+
+  val read_all : file_descr -> t -> int
+
+  val write : file_descr -> t -> int -> int -> int
+
+  val write_all : file_descr -> t -> int
+end
+
+module IVar : sig
+  type 'a t
+  val create : unit -> 'a t
+  val fill   : 'a t -> 'a -> unit
+  val read   : 'a t -> 'a
+end
 
 val run : (unit -> unit) -> unit
 (** Run the asynchronous program. *)

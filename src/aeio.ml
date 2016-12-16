@@ -21,24 +21,30 @@ type msg_flag = Unix.msg_flag
 exception Cancelled
 exception Promise_cancelled
 
+type thread_id = int
+
 type cleanup = (unit -> unit) ref
 
 type cont = Cont : ('a, unit) continuation -> cont
 
 type _context = 
-  | Default   : cont Lwt_sequence.t -> _context
+  | Default   : (cont * local_state) Lwt_sequence.t -> _context
   | Cancelled : _context
 
-type context = _context ref
+and context = _context ref
+
+and local_state = 
+  { mutable context   : context;
+            cleanup   : cleanup;
+            thread_id : thread_id }
 
 type 'a _promise =
   | Done    of 'a
   | Error   of exn
-  | Waiting of (cont Lwt_sequence.node * ('a, unit) continuation) list
+  | Waiting of ((cont * local_state) Lwt_sequence.node * ('a, unit) continuation) list
 
 type 'a promise = 'a _promise ref
 
-type thread_id = int
 
 effect Async : ('a -> 'b) * 'a * context option -> 'b promise
 effect Await : 'a promise -> 'a
@@ -47,6 +53,8 @@ effect Yield : unit
 effect Accept : file_descr -> (file_descr * sockaddr)
 effect Recv   : file_descr * bytes * int * int * msg_flag list -> int
 effect Send   : file_descr * bytes * int * int * msg_flag list -> int
+effect Read   : file_descr * bytes * int * int -> int
+effect Write  : file_descr * bytes * int * int -> int
 effect Sleep  : float -> unit
 
 effect Get_context    : context
@@ -56,11 +64,6 @@ type global_state =
   { run_q    : (unit -> unit) Queue.t;
     read_ht  : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t;
     write_ht : (file_descr, Lwt_engine.event * (unit -> unit) Lwt_sequence.t) Hashtbl.t; }
-
-type local_state = 
-  { context   : context;
-    cleanup   : cleanup;
-    thread_id : thread_id }
 
 (* Wrappers for performing effects *)
 
@@ -79,11 +82,22 @@ let accept fd =
 let recv fd buf pos len mode =
   perform (Recv (fd, buf, pos, len, mode))
 
-let send fd bus pos len mode =
-  perform (Send (fd, bus, pos, len, mode))
+let send fd buf pos len mode =
+  perform (Send (fd, buf, pos, len, mode))
+
+let read fd buf pos len =
+  perform (Read (fd, buf, pos, len))
+
+let write fd buf pos len =
+  perform (Write (fd, buf, pos, len))
 
 let sleep timeout =
   perform (Sleep timeout)
+
+(* Stubs *)
+
+external stub_read  : Unix.file_descr -> Bytes.t -> int -> int -> int = "lwt_unix_read"
+external stub_write : Unix.file_descr -> Bytes.t -> int -> int -> int = "lwt_unix_write"
 
 (* Cancellation *)
 
@@ -93,15 +107,20 @@ let my_context () = perform Get_context
 
 let cancel ctxt = perform (Cancel_context ctxt)
 
-let handle_cancel gst k their_ctxt my_ctxt = 
-  match !their_ctxt with
+let handle_cancel lst gst k ctxt =
+  let cancel_fiber lst k =
+    lst.context <- new_context (); 
+    !(lst.cleanup) ();
+    discontinue k Cancelled
+  in
+  match !ctxt with
   | Default l ->
-      their_ctxt := Cancelled;
-      Lwt_sequence.iter_l (fun (Cont k) -> Queue.push (fun () -> 
-        discontinue k Cancelled) gst.run_q) l;
-      if their_ctxt = my_ctxt then 
-        discontinue k Cancelled
-      else continue k ()
+      ctxt := Cancelled;
+      Lwt_sequence.iter_l (fun (Cont k, lst) -> Queue.push (fun () -> 
+        cancel_fiber lst k) gst.run_q) l;
+      if ctxt = lst.context then begin
+        cancel_fiber lst k 
+      end else continue k ()
   | Cancelled -> ()
 
 let live ctxt = 
@@ -109,9 +128,9 @@ let live ctxt =
   | Default _ -> true
   | Cancelled -> false 
 
-let wait_on_context ctxt k =
-  match !ctxt with
-  | Default s -> Lwt_sequence.add_r (Cont k) s
+let watch_for_cancellation lst k =
+  match !(lst.context) with
+  | Default s -> Lwt_sequence.add_r (Cont k, lst) s
   | Cancelled -> failwith "Impossible happened"
 
 (* IO loop *)
@@ -148,8 +167,8 @@ and perform_io gst =
 (* Syscall wrappers *)
 
 type syscall_kind = 
-  | Read 
-  | Write
+  | Syscall_read 
+  | Syscall_write
 
 external poll_rd : Unix.file_descr -> bool = "lwt_unix_readable"
 external poll_wr : Unix.file_descr -> bool = "lwt_unix_writable"
@@ -162,7 +181,7 @@ let register_writable fd seq =
 
 let poll_syscall fd kind action =
   try
-    if (kind = Read && poll_rd fd) || (kind = Write && poll_wr fd) then
+    if (kind = Syscall_read && poll_rd fd) || (kind = Syscall_write && poll_wr fd) then
       Some (action ())
     else None
   with
@@ -186,8 +205,8 @@ let rec block_syscall cleanup ctxt_node gst fd kind action k =
   let node = ref dummy in
   let ht,register = 
     match kind with
-    | Read -> gst.read_ht, register_readable
-    | Write -> gst.write_ht, register_writable
+    | Syscall_read -> gst.read_ht, register_readable
+    | Syscall_write -> gst.write_ht, register_writable
   in
   let seq = 
     try snd @@ Hashtbl.find ht fd
@@ -239,14 +258,43 @@ let abort gst prom e =
         Queue.push (fun () -> maybe_discontinue ctxt_node k e) gst.run_q) l
   | _ -> failwith "Impossible: abort"
 
-let force ctxt gst prom k =
+let force lst gst prom k =
   match !prom with
   | Done v -> continue k v
   | Error e -> discontinue k e
   | Waiting l -> 
-      let ctxt_node = wait_on_context ctxt k in
+      let ctxt_node = watch_for_cancellation lst k in
       prom := Waiting ((ctxt_node,k)::l); 
       schedule gst
+
+module IVar = struct
+
+  type 'a t = 'a _promise ref
+
+  let create () = mk_promise ()
+
+  effect Fill : 'a t * 'a -> unit
+  let fill iv v = perform (Fill (iv,v))
+
+  effect Read : 'a t -> 'a
+  let read iv = perform (Read iv)
+end
+
+module Bigstring = struct
+  type t = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
+
+  effect Read : file_descr * t * int * int -> int
+  effect Write : file_descr * t * int * int -> int 
+
+  let read fd buf pos len = perform (Read (fd, buf, pos, len))
+  let read_all fd buf = read fd buf 0 (Lwt_bytes.length buf)
+
+  let write fd buf pos len = perform (Write (fd, buf, pos, len))
+  let write_all fd buf = write fd buf 0 (Lwt_bytes.length buf)
+
+  external stub_read : Unix.file_descr -> t -> int -> int -> int = "lwt_unix_bytes_read"
+  external stub_write : Unix.file_descr -> t -> int -> int -> int = "lwt_unix_bytes_write"
+end
 
 (* Main handler loop *)
 
@@ -269,19 +317,17 @@ let run main =
       match f () with
       | v -> finish gst prom v; schedule gst
       | exception Cancelled ->
-          (* Necessary for removing event from event queue. *)
-          !(lst.cleanup) (); 
           abort gst prom Promise_cancelled;
           schedule gst
       | exception e ->
           abort gst prom e;
           schedule gst
       | effect Yield k when live lst.context ->
-          let ctxt_node = wait_on_context lst.context k in
+          let ctxt_node = watch_for_cancellation lst k in
           Queue.push (maybe_continue ctxt_node k) gst.run_q;
           schedule gst
       | effect (Async (f, v, c)) k when live lst.context ->
-          let ctxt_node = wait_on_context lst.context k in
+          let ctxt_node = watch_for_cancellation lst k in
           let ctxt = 
             match c with 
             | None -> lst.context 
@@ -296,31 +342,53 @@ let run main =
           in 
           fork lst gst prom (fun () -> f v)
       | effect (Await prom) k when live lst.context -> 
-          force lst.context gst prom k
+          (* TODO KC: Cancellation *)
+          force lst gst prom k
+      | effect (IVar.Read iv) k when live lst.context -> 
+          (* TODO KC: Cancellation *)
+          force lst gst iv k
+      | effect (IVar.Fill (iv,v)) k when live lst.context ->
+          finish gst iv v;
+          continue k ()
       | effect (Accept fd) k when live lst.context ->
-          let ctxt_node = wait_on_context lst.context k in
+          let ctxt_node = watch_for_cancellation lst k in
           let action () = Unix.accept fd in
-          do_syscall lst.cleanup ctxt_node gst fd Read action k
+          do_syscall lst.cleanup ctxt_node gst fd Syscall_read action k
       | effect (Recv (fd, buf, pos, len, mode)) k when live lst.context ->
-          let Default l = !(lst.context) in 
-          let ctxt_node = wait_on_context lst.context k in
+          let ctxt_node = watch_for_cancellation lst k in
           let action () = Unix.recv fd buf pos len mode in
-          do_syscall lst.cleanup ctxt_node gst fd Read action k
+          do_syscall lst.cleanup ctxt_node gst fd Syscall_read action k
       | effect (Send (fd, buf, pos, len, mode)) k when live lst.context ->
-          let ctxt_node = wait_on_context lst.context k in
+          let ctxt_node = watch_for_cancellation lst k in
           let action () = Unix.send fd buf pos len mode in
-          do_syscall lst.cleanup ctxt_node gst fd Write action k
+          do_syscall lst.cleanup ctxt_node gst fd Syscall_write action k
+      | effect (Read (fd, buf, pos, len)) k when live lst.context ->
+          let ctxt_node = watch_for_cancellation lst k in
+          let action () = stub_read fd buf pos len in
+          do_syscall lst.cleanup ctxt_node gst fd Syscall_read action k
+      | effect (Write (fd, buf, pos, len)) k when live lst.context ->
+          let ctxt_node = watch_for_cancellation lst k in
+          let action () = stub_write fd buf pos len in
+          do_syscall lst.cleanup ctxt_node gst fd Syscall_write action k
+      | effect (Bigstring.Read (fd, buf, pos, len)) k when live lst.context ->
+          let ctxt_node = watch_for_cancellation lst k in
+          let action () = Bigstring.stub_read fd buf pos len in
+          do_syscall lst.cleanup ctxt_node gst fd Syscall_read action k
+      | effect (Bigstring.Write (fd, buf, pos, len)) k when live lst.context ->
+          let ctxt_node = watch_for_cancellation lst k in
+          let action () = Bigstring.stub_write fd buf pos len in
+          do_syscall lst.cleanup ctxt_node gst fd Syscall_write action k
       | effect (Sleep t) k when live lst.context ->
           if t <= 0. then continue k ()
           else begin
-            let ctxt_node = wait_on_context lst.context k in
+            let ctxt_node = watch_for_cancellation lst k in
             block_sleep ctxt_node gst t k;
             schedule gst
           end
       | effect Get_context k when live lst.context ->
           continue k lst.context 
-      | effect (Cancel_context ctxt') k when live lst.context ->
-          handle_cancel gst k ctxt' lst.context 
+      | effect (Cancel_context ctxt) k when live lst.context ->
+          handle_cancel lst gst k ctxt 
       | effect e k when not(live lst.context) ->
           discontinue k Cancelled
   in

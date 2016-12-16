@@ -1,6 +1,6 @@
 description = "Asynchronous effect-based IO"
 version = "%%VERSION_NUM%%"
-requires = ""
+requires = "lwt.unix"
 archive(byte) = "aeio.cma"
 archive(native) = "aeio.cmxa"
 plugin(byte) = "aeio.cma"
