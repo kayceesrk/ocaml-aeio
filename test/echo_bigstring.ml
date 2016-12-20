@@ -31,19 +31,26 @@
 open Printexc
 open Printf
 
+module B = Lwt_bytes
+
 let send sock str =
-  let len = Bytes.length str in
+  let len = B.length str in
   let total = ref 0 in
   while !total < len do
-    let write_count = Aeio.send sock str !total (len - !total) [] in
+    let write_count = Aeio.Bigstring.write sock str !total (len - !total) in
     total := write_count + !total
   done;
   !total
 
 let recv sock maxlen =
-  let str = Bytes.create maxlen in
-  let recvlen = Aeio.recv sock str 0 maxlen [] in
-  Bytes.sub str 0 recvlen
+  let str = B.create maxlen in
+  let recvlen = Aeio.Bigstring.read_all sock str in
+  for i = 0 to recvlen 
+  do
+    Printf.printf "%c" @@ Bigarray.Array1.get str i
+  done;
+  print_endline "";
+  Bigarray.Array1.sub str 0 recvlen
 
 let close sock =
   try Aeio.shutdown sock Unix.SHUTDOWN_ALL
@@ -59,7 +66,7 @@ let string_of_sockaddr = function
 let echo_server sock addr =
   let rec loop () = 
     let data = recv sock 1024 in
-    if Bytes.length data > 0 then
+    if B.length data > 0 then
       (ignore (send sock data);
        loop ())
     else

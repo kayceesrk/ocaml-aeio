@@ -46,9 +46,9 @@ let recv sock maxlen =
   Bytes.sub str 0 recvlen
 
 let close sock =
-  try Unix.shutdown sock Unix.SHUTDOWN_ALL
+  try Aeio.shutdown sock Unix.SHUTDOWN_ALL
   with _ -> () ;
-  Unix.close sock
+  Aeio.close sock
 
 let string_of_sockaddr = function
   | Unix.ADDR_UNIX s -> s
@@ -86,13 +86,15 @@ let server () =
   printf "Echo server listening on 127.0.0.1:%d\n%!" port;
   printf "Connect as `telnet localhost 9301`\n%!";
   let saddr = Unix.ADDR_INET (addr, port) in
-  let ssock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-  (* SO_REUSEADDR so we can restart the server quickly. *)
-  Unix.setsockopt ssock Unix.SO_REUSEADDR true;
-  Unix.bind ssock saddr;
-  Unix.listen ssock 20;
-  (* Socket is non-blocking *)
-  Unix.set_nonblock ssock;
+  let ssock = Aeio.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  let ssock_unix = Aeio.get_unix_fd ssock in
+
+  (* configure socket *)
+  Unix.setsockopt ssock_unix Unix.SO_REUSEADDR true;
+  Unix.bind ssock_unix saddr;
+  Unix.listen ssock_unix 20;
+  Unix.set_nonblock ssock_unix;
+
   try
     let ctxt = Aeio.my_context () in
     (* Wait for clients, and fork off echo servers. *)
@@ -100,7 +102,7 @@ let server () =
       let client_sock, client_addr = Aeio.accept ssock in
       let cn = string_of_sockaddr client_addr in
       printf "server : client (%s) connected.\n%!" cn;
-      Unix.set_nonblock client_sock;
+      Unix.set_nonblock @@ Aeio.get_unix_fd client_sock;
       ignore @@ Aeio.async ~ctxt (echo_server client_sock) client_addr
     done
   with

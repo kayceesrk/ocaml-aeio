@@ -10,9 +10,20 @@
 
 (** {1 Aeio} *)
 
-type file_descr = Unix.file_descr
-type sockaddr = Unix.sockaddr
-type msg_flag = Unix.msg_flag
+type file_descr 
+(** The type of file descriptors. *)
+
+val get_unix_fd : file_descr -> Unix.file_descr
+(** Get the underlying unix file descriptor. *)
+
+val socket : Unix.socket_domain -> Unix.socket_type -> int -> file_descr
+(** Same as {!Unix.socket}. *)
+
+val close : file_descr -> unit
+(** Same as {!Unix.close}. *)
+
+val shutdown : file_descr -> Unix.shutdown_command -> unit
+(** Same as {!Unix.shutdown}. *)
 
 type 'a promise
 (** The type of promise. *)
@@ -49,13 +60,13 @@ val await : 'a promise -> 'a
 val yield : unit -> unit
 (** Yield control. *)
 
-val accept : file_descr -> file_descr * sockaddr
+val accept : file_descr -> file_descr * Unix.sockaddr
 (** Similar to Unix.accept, but asynchronous. *)
 
-val recv : file_descr -> bytes -> int -> int -> msg_flag list -> int
+val recv : file_descr -> bytes -> int -> int -> Unix.msg_flag list -> int
 (** Similar to Unix.recv, but asynchronous. *)
 
-val send : file_descr -> bytes -> int -> int -> msg_flag list -> int
+val send : file_descr -> bytes -> int -> int -> Unix.msg_flag list -> int
 (** Similar to Unix.send, but asynchronous. *)
 
 val write : file_descr -> bytes -> int -> int -> int
@@ -87,7 +98,7 @@ module IVar : sig
   val read   : 'a t -> 'a
 end
 
-val run : (unit -> unit) -> unit
+val run : ?engine:[`Select | `Libev] -> (unit -> unit) -> unit
 (** Run the asynchronous program. *)
 
 (*---------------------------------------------------------------------------
