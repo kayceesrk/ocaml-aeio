@@ -88,7 +88,7 @@ let server () =
   Unix.setsockopt ssock_unix Unix.SO_REUSEADDR true;
   Unix.bind ssock_unix saddr;
   Unix.listen ssock_unix 20;
-  Unix.set_nonblock ssock_unix;
+  Aeio.set_nonblock ssock;
 
   try
     (* Wait for clients, and fork off echo servers. *)
@@ -96,7 +96,7 @@ let server () =
       let client_sock, client_addr = Aeio.accept ssock in
       let cn = string_of_sockaddr client_addr in
       printf "server : client (%s) connected.\n%!" cn;
-      Unix.set_nonblock @@ Aeio.get_unix_fd client_sock;
+      Aeio.set_nonblock client_sock;
       ignore @@ Aeio.async (echo_server client_sock) client_addr
     done
   with

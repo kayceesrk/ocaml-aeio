@@ -25,6 +25,9 @@ val close : file_descr -> unit
 val shutdown : file_descr -> Unix.shutdown_command -> unit
 (** Same as {!Unix.shutdown}. *)
 
+val set_nonblock : file_descr -> unit
+(** Same as {!Unix.set_nonblock}. *)
+
 type 'a promise
 (** The type of promise. *)
 

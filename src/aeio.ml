@@ -12,23 +12,33 @@
  * transparent to the programmer.
  *)
 
+(** Debug *)
+
+let fiber_size k = Obj.size (Obj.field (Obj.repr k) 0)
+
 (* Type declarations *)
 
 type file_descr = 
   { fd : Unix.file_descr;
+    mutable blocking : bool;
 	  mutable event_readable : Lwt_engine.event option;
   	mutable event_writable : Lwt_engine.event option;
     hooks_readable : (unit -> unit) Lwt_sequence.t;
     hooks_writable : (unit -> unit) Lwt_sequence.t }
 
 let mk_chan fd =
-  { fd; event_readable = None; event_writable = None; 
+  { fd; blocking = true;
+    event_readable = None; event_writable = None; 
     hooks_readable = Lwt_sequence.create ();
     hooks_writable = Lwt_sequence.create () }
 
 let socket d t i =
   let fd = Unix.socket d t i in
   mk_chan fd
+
+let set_nonblock ch =
+  Unix.set_nonblock ch.fd;
+  ch.blocking <- false
 
 let get_unix_fd ch = ch.fd
 
@@ -108,7 +118,7 @@ let sleep timeout =
 (* Stubs *)
 
 external stub_read  : Unix.file_descr -> Bytes.t -> int -> int -> int = "lwt_unix_read"
-external stub_write : Unix.file_descr -> Bytes.t -> int -> int -> int = "lwt_unix_write"
+external stub_write : Unix.file_descr -> Bytes.t -> int -> int -> int = "lwt_unix_write" 
 
 (* Cancellation *)
 
@@ -154,25 +164,23 @@ let clear_events ch =
     | Some ev ->
         ch.event_readable <- None;
         Lwt_engine.stop_event ev
-    | None ->
-        ()
+    | None -> ()
   end; 
   begin
     match ch.event_writable with 
     | Some ev ->
         ch.event_writable <- None;
         Lwt_engine.stop_event ev
-    | None ->
-        ()
+    | None -> ()
   end  
 
 let close ch = 
-  Unix.close ch.fd;
-  clear_events ch
+  clear_events ch;
+  Unix.close ch.fd
 
 let shutdown ch sc = 
-  Unix.shutdown ch.fd sc;
-  clear_events ch
+  clear_events ch;
+  Unix.shutdown ch.fd sc
 
 let rec schedule gst =
   if Queue.is_empty gst.run_q then (* No runnable threads *)
@@ -193,7 +201,7 @@ type syscall_kind =
   | Syscall_read 
   | Syscall_write
 
-external poll_rd : Unix.file_descr -> bool = "lwt_unix_readable"
+external poll_rd : Unix.file_descr -> bool = "lwt_unix_readable" 
 external poll_wr : Unix.file_descr -> bool = "lwt_unix_writable"
 
 let register_readable ch seq = 
@@ -207,9 +215,11 @@ let register_writable ch seq =
     let hook _ = Lwt_sequence.iter_l (fun f -> f ()) seq in
     ch.event_writable <- Some (Lwt_engine.on_writable ch.fd hook)
 
-let poll_syscall fd kind action =
+let poll_syscall ch kind action =
   try
-    if (kind = Syscall_read && poll_rd fd) || (kind = Syscall_write && poll_wr fd) then
+    if not ch.blocking || 
+       (kind = Syscall_read && poll_rd ch.fd) || 
+       (kind = Syscall_write && poll_wr ch.fd) then
       Some (action ())
     else None
   with
@@ -221,11 +231,13 @@ let dummy_cleanup () = ()
 
 let maybe_continue ctxt_node k v =
   Lwt_sequence.remove ctxt_node;
+  (** TODO: tailcall *)
   try continue k v with
   | Invalid_argument _ -> ()
 
 let maybe_discontinue ctxt_node k v =
   Lwt_sequence.remove ctxt_node;
+  (** Todo: tailcall *)
   try discontinue k v with
   | Invalid_argument _ -> ()
 
@@ -242,7 +254,7 @@ let rec block_syscall cleanup ctxt_node gst ch kind action k =
   in
   node := Lwt_sequence.add_r (fun () ->
     Lwt_sequence.remove !node;
-    match poll_syscall ch.fd kind action with
+    match poll_syscall ch kind action with
     | Some res -> 
         cleanup := dummy_cleanup;
         Queue.push (fun () -> maybe_continue ctxt_node k res) gst.run_q
@@ -251,7 +263,7 @@ let rec block_syscall cleanup ctxt_node gst ch kind action k =
   cleanup := (fun () -> Lwt_sequence.remove !node)
 
 let do_syscall cleanup ctxt_node gst ch kind action k =
-  match poll_syscall ch.fd kind action with
+  match poll_syscall ch kind action with
   | Some res -> maybe_continue ctxt_node k res
   | None -> 
       block_syscall cleanup ctxt_node gst ch kind action k;
