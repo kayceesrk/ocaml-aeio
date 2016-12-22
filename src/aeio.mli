@@ -63,6 +63,9 @@ val await : 'a promise -> 'a
 val yield : unit -> unit
 (** Yield control. *)
 
+val get_tid : unit -> int
+(** Get the current fiber id. *)
+
 val accept : file_descr -> file_descr * Unix.sockaddr
 (** Similar to Unix.accept, but asynchronous. *)
 
