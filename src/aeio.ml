@@ -329,8 +329,14 @@ end
 module Bigstring = struct
   type t = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
 
+  type io_vector = 
+    { buffer : t; 
+      off : int; 
+      len : int }
+
   effect Read : file_descr * t * int * int -> int
   effect Write : file_descr * t * int * int -> int 
+  effect Writev : file_descr * io_vector array -> int
 
   let read fd buf pos len = perform (Read (fd, buf, pos, len))
   let read_all fd buf = read fd buf 0 (Lwt_bytes.length buf)
@@ -338,8 +344,11 @@ module Bigstring = struct
   let write fd buf pos len = perform (Write (fd, buf, pos, len))
   let write_all fd buf = write fd buf 0 (Lwt_bytes.length buf)
 
+  let writev fd iovecs = perform (Writev (fd, iovecs))
+
   external stub_read : Unix.file_descr -> t -> int -> int -> int = "lwt_unix_bytes_read"
   external stub_write : Unix.file_descr -> t -> int -> int -> int = "lwt_unix_bytes_write"
+  external stub_writev : Unix.file_descr -> io_vector array -> int = "aeio_unix_bytes_writev"
 end
 
 (* Main handler loop *)
@@ -430,6 +439,10 @@ let run ?engine main =
       | effect (Bigstring.Write (ch, buf, pos, len)) k when live lst.context ->
           let ctxt_node = watch_for_cancellation lst k in
           let action () = Bigstring.stub_write ch.fd buf pos len in
+          do_syscall lst.cleanup ctxt_node gst ch Syscall_write action k
+      | effect (Bigstring.Writev (ch, iovecs)) k when live lst.context ->
+          let ctxt_node = watch_for_cancellation lst k in
+          let action () = Bigstring.stub_writev ch.fd iovecs in
           do_syscall lst.cleanup ctxt_node gst ch Syscall_write action k
       | effect (Sleep t) k when live lst.context ->
           if t <= 0. then continue k ()

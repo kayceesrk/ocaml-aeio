@@ -95,6 +95,13 @@ module Bigstring : sig
   val write : file_descr -> t -> int -> int -> int
 
   val write_all : file_descr -> t -> int
+
+  type io_vector =
+    { buffer : t;
+      off : int;
+      len : int }
+
+  val writev : file_descr -> io_vector array -> int
 end
 
 module IVar : sig

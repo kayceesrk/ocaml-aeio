@@ -3,6 +3,9 @@ true : bin_annot, safe_string, package(bytes)
 <src> : include
 <test> : include
 
+<src/*.{cma,cmxa}>: package(lwt.unix), use_aeio
+<src/*.{cmxs}>: package(lwt.unix), link_aeio
 <src/**>: package(lwt.unix)
 
-<test/echo*.*>: package(lwt.unix)
+<test/echo*.*>: package(lwt.unix), link_aeio
+<test/echo*.byte>: custom
