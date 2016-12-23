@@ -84,6 +84,9 @@ val read  : file_descr -> bytes -> int -> int -> int
 val sleep : float -> unit
 (** [sleep t] suspends the fiber for [t] milliseconds. *)
 
+val live_async : unit -> int
+(** Get the number of asyncs currently alive. *)
+
 module Bigstring : sig
 
   type t = (char, Bigarray.int8_unsigned_elt, Bigarray.c_layout) Bigarray.Array1.t
