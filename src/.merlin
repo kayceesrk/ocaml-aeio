@@ -1,0 +1,3 @@
+PKG lwt aeio faraday angstrom
+B _build/src
+S src
