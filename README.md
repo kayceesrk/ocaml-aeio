@@ -10,7 +10,7 @@ Homepage: https://github.com/kayceesrk/aeio
 
 ## Installation
 
-aeio can be installed with `opam`:
+First [install multicore OCaml](https://github.com/ocamllabs/multicore-opam#install-multicore-ocaml). Then, aeio can be installed with `opam`:
 
     opam install aeio
 
