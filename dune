@@ -1,0 +1,26 @@
+(include_subdirs unqualified)
+
+(env
+ (dev
+  (flags (:standard -warn-error -A))))
+
+(library
+ (name aeio)
+ (foreign_stubs (language c) (names aeio_stubs))
+ (modules aeio)
+ (libraries lwt lwt.unix lwt-dllist))
+
+(executable
+ (name echo_bigstring)
+ (modules echo_bigstring)
+ (libraries lwt lwt.unix aeio))
+ 
+(executable
+ (name echo)
+ (modules echo)
+ (libraries lwt lwt.unix aeio))
+ 
+(executable
+ (name echo_cancel)
+ (modules echo_cancel)
+ (libraries lwt lwt.unix aeio)) 

@@ -1,4 +1,33 @@
-PKG bytes
+EXCLUDE_QUERY_DIR
+B /home/sadiq/.opam/4.10.0+multicore/lib/bytes
+B /home/sadiq/.opam/4.10.0+multicore/lib/lwt
+B /home/sadiq/.opam/4.10.0+multicore/lib/lwt-dllist
+B /home/sadiq/.opam/4.10.0+multicore/lib/lwt/unix
+B /home/sadiq/.opam/4.10.0+multicore/lib/mmap
+B /home/sadiq/.opam/4.10.0+multicore/lib/ocaml
+B /home/sadiq/.opam/4.10.0+multicore/lib/ocaml/threads
+B /home/sadiq/.opam/4.10.0+multicore/lib/ocplib-endian
+B /home/sadiq/.opam/4.10.0+multicore/lib/ocplib-endian/bigstring
+B /home/sadiq/.opam/4.10.0+multicore/lib/result
+B /home/sadiq/.opam/4.10.0+multicore/lib/seq
+B _build/default/.aeio.objs/byte
+B _build/default/.echo.eobjs/byte
+B _build/default/.echo_bigstring.eobjs/byte
+B _build/default/.echo_cancel.eobjs/byte
+S /home/sadiq/.opam/4.10.0+multicore/lib/bytes
+S /home/sadiq/.opam/4.10.0+multicore/lib/lwt
+S /home/sadiq/.opam/4.10.0+multicore/lib/lwt-dllist
+S /home/sadiq/.opam/4.10.0+multicore/lib/lwt/unix
+S /home/sadiq/.opam/4.10.0+multicore/lib/mmap
+S /home/sadiq/.opam/4.10.0+multicore/lib/ocaml
+S /home/sadiq/.opam/4.10.0+multicore/lib/ocaml/threads
+S /home/sadiq/.opam/4.10.0+multicore/lib/ocplib-endian
+S /home/sadiq/.opam/4.10.0+multicore/lib/ocplib-endian/bigstring
+S /home/sadiq/.opam/4.10.0+multicore/lib/result
+S /home/sadiq/.opam/4.10.0+multicore/lib/seq
+S .
+S doc
+S node_modules
 S src
 S test
-B _build/**
+FLG -w @1..3@5..28@30..39@43@46..47@49..57@61..62-40 -strict-sequence -strict-formats -short-paths -keep-locs -warn-error -A -w @1..3@5..28@30..39@43@46..47@49..57@61..62-40 -strict-sequence -strict-formats -short-paths -keep-locs -warn-error -A -w @1..3@5..28@30..39@43@46..47@49..57@61..62-40 -strict-sequence -strict-formats -short-paths -keep-locs -warn-error -A -w @1..3@5..28@30..39@43@46..47@49..57@61..62-40 -strict-sequence -strict-formats -short-paths -keep-locs -warn-error -A
