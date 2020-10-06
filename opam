@@ -12,7 +12,9 @@ depends: [
   "ocamlfind" {build}
   "ocamlbuild" {build}
   "topkg" {build} 
-	"lwt" {= "2.5.1"}
+	"lwt"
+  "lwt-dllist"
+  "conf-libev"
 ]
 depopts: []
 build: [
