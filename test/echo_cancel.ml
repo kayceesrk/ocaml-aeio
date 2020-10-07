@@ -28,7 +28,6 @@
  * [2] https://github.com/ocamllabs/opam-repo-dev
  *)
 
-open Printexc
 open Printf
 
 let send sock str =
@@ -125,7 +124,7 @@ let () =
   else 
     match Sys.argv.(1) with
     | "select" -> Lwt_engine.set (new Lwt_engine.select)
-    | "libev" -> Lwt_engine.set (new Lwt_engine.libev)
+    | "libev" -> Lwt_engine.set (new Lwt_engine.libev ())
     | _ -> print_usage_and_exit ()
 
 let () = 

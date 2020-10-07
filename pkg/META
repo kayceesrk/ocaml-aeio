@@ -1,7 +1,0 @@
-description = "Asynchronous effect-based IO"
-version = "%%VERSION_NUM%%"
-requires = "lwt.unix"
-archive(byte) = "aeio.cma"
-archive(native) = "aeio.cmxa"
-plugin(byte) = "aeio.cma"
-plugin(native) = "aeio.cmxs"

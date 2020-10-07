@@ -12,11 +12,18 @@
  * transparent to the programmer.
  *)
 
-(** Debug *)
+(** Debug
 
 let fiber_size k = Obj.size (Obj.field (Obj.repr k) 0)
 
-let debug = false
+
+let dprintf s =
+  if debug then begin
+    Printf.printf "[%d] " (get_tid ());
+    Printf.printf s
+  end else
+    Printf.ifprintf stdout s
+**)
 
 (* Type declarations *)
 
@@ -28,14 +35,14 @@ type file_descr =
     mutable blocking : bool;
 	  mutable event_readable : Lwt_engine.event option;
   	mutable event_writable : Lwt_engine.event option;
-    hooks_readable : (unit -> unit) Lwt_sequence.t;
-    hooks_writable : (unit -> unit) Lwt_sequence.t }
+    hooks_readable : (unit -> unit) Lwt_dllist.t;
+    hooks_writable : (unit -> unit) Lwt_dllist.t }
 
 let mk_chan fd =
   { fd; blocking = true; status = FD_OPEN;
     event_readable = None; event_writable = None;
-    hooks_readable = Lwt_sequence.create ();
-    hooks_writable = Lwt_sequence.create () }
+    hooks_readable = Lwt_dllist.create ();
+    hooks_writable = Lwt_dllist.create () }
 
 let socket d t i =
   let fd = Unix.socket d t i in
@@ -57,7 +64,7 @@ type cleanup = (unit -> unit) option ref
 type cont = Cont : ('a, unit) continuation option ref -> cont
 
 type _context =
-  | Default   : (cont * local_state) Lwt_sequence.t -> _context
+  | Default   : (cont * local_state) Lwt_dllist.t -> _context
   | Cancelled : _context
 
 and context = _context ref
@@ -70,7 +77,7 @@ and local_state =
 type 'a _promise =
   | Done    of 'a
   | Error   of exn
-  | Waiting of ((cont * local_state) Lwt_sequence.node * ('a, unit) continuation option ref) list
+  | Waiting of ((cont * local_state) Lwt_dllist.node * ('a, unit) continuation option ref) list
 
 type 'a promise = 'a _promise ref
 
@@ -91,7 +98,7 @@ effect Cancel_context : context -> unit
 effect Get_num_async  : int
 
 type global_state =
-  {         run_q     : (unit -> unit) Lwt_sequence.t;
+  {         run_q     : (unit -> unit) Lwt_dllist.t;
     mutable num_async : int }
 
 (* Wrappers for performing effects *)
@@ -129,13 +136,6 @@ let get_tid () =
 let live_async () =
   perform Get_num_async
 
-let dprintf s =
-  if debug then begin
-    Printf.printf "[%d] " (get_tid ());
-    Printf.printf s
-  end else
-    Printf.ifprintf stdout s
-
 (* Stubs *)
 
 external stub_read  : Unix.file_descr -> Bytes.t -> int -> int -> int = "lwt_unix_read"
@@ -143,7 +143,7 @@ external stub_write : Unix.file_descr -> Bytes.t -> int -> int -> int = "lwt_uni
 
 (* Cancellation *)
 
-let new_context () = ref (Default (Lwt_sequence.create ()))
+let new_context () = ref (Default (Lwt_dllist.create ()))
 
 let my_context () = perform Get_context
 
@@ -165,7 +165,7 @@ let handle_cancel lst gst k ctxt =
   match !ctxt with
   | Default l ->
       ctxt := Cancelled;
-      Lwt_sequence.iter_l (fun (Cont k, lst) -> ignore @@ Lwt_sequence.add_r (fun () ->
+      Lwt_dllist.iter_l (fun (Cont k, lst) -> ignore @@ Lwt_dllist.add_r (fun () ->
         cancel_fiber lst k) gst.run_q) l;
       if ctxt = lst.context then begin
         cancel_fiber lst (ref (Some k))
@@ -179,14 +179,14 @@ let live ctxt =
 
 let watch_for_cancellation lst k =
   match !(lst.context) with
-  | Default s -> Lwt_sequence.add_r (Cont k, lst) s
+  | Default s -> Lwt_dllist.add_r (Cont k, lst) s
   | Cancelled -> failwith "Impossible happened"
 
 (* IO loop *)
 
 let clear_events ch =
-  Lwt_sequence.iter_node_l (fun node -> Lwt_sequence.remove node; Lwt_sequence.get node ()) ch.hooks_readable;
-  Lwt_sequence.iter_node_l (fun node -> Lwt_sequence.remove node; Lwt_sequence.get node ()) ch.hooks_writable;
+  Lwt_dllist.iter_node_l (fun node -> Lwt_dllist.remove node; Lwt_dllist.get node ()) ch.hooks_readable;
+  Lwt_dllist.iter_node_l (fun node -> Lwt_dllist.remove node; Lwt_dllist.get node ()) ch.hooks_writable;
   begin
     match ch.event_readable with
     | Some ev ->
@@ -217,13 +217,13 @@ let shutdown ch sc =
   end
 
 let rec schedule gst =
-  if Lwt_sequence.is_empty gst.run_q then (* No runnable threads *)
+  if Lwt_dllist.is_empty gst.run_q then (* No runnable threads *)
     if Lwt_engine.readable_count () = 0 &&
        Lwt_engine.writable_count () = 0 &&
        Lwt_engine.timer_count () = 0 then () (* We are done *)
     else perform_io gst
   else (* Still have runnable threads *)
-    Lwt_sequence.take_l gst.run_q ()
+    Lwt_dllist.take_l gst.run_q ()
 
 and perform_io gst =
   Lwt_engine.iter true;
@@ -240,13 +240,13 @@ external poll_wr : Unix.file_descr -> bool = "lwt_unix_writable"
 
 let register_readable ch seq =
   if ch.event_readable = None then begin
-    let hook _ = Lwt_sequence.iter_l (fun f -> f ()) seq in
+    let hook _ = Lwt_dllist.iter_l (fun f -> f ()) seq in
     ch.event_readable <- Some (Lwt_engine.on_readable ch.fd hook)
   end
 
 let register_writable ch seq =
   if ch.event_writable = None then
-    let hook _ = Lwt_sequence.iter_l (fun f -> f ()) seq in
+    let hook _ = Lwt_dllist.iter_l (fun f -> f ()) seq in
     ch.event_writable <- Some (Lwt_engine.on_writable ch.fd hook)
 
 let try_syscall ch kind action =
@@ -261,16 +261,16 @@ let try_syscall ch kind action =
   | Unix.Unix_error((Unix.EAGAIN | Unix.EWOULDBLOCK | Unix.EINTR), _, _)
   | Sys_blocked_io -> None
 
-let dummy = Lwt_sequence.add_r ignore (Lwt_sequence.create ())
+let dummy = Lwt_dllist.add_r ignore (Lwt_dllist.create ())
 
 let maybe_continue ctxt_node k v =
-  Lwt_sequence.remove ctxt_node;
+  Lwt_dllist.remove ctxt_node;
   match !k with
   | None -> k := None
   | Some k -> continue k v
 
 let maybe_discontinue ctxt_node k v =
-  Lwt_sequence.remove ctxt_node;
+  Lwt_dllist.remove ctxt_node;
   match !k with
   | None -> k := None
   | Some k -> discontinue k v
@@ -286,21 +286,21 @@ let rec block_syscall cleanup ctxt_node gst ch kind action k =
         register_writable ch ch.hooks_writable;
         ch.hooks_writable
   in
-  node := Lwt_sequence.add_r (fun () ->
-    Lwt_sequence.remove !node;
+  node := Lwt_dllist.add_r (fun () ->
+    Lwt_dllist.remove !node;
     begin match try_syscall ch kind action with
     | None -> block_syscall cleanup ctxt_node gst ch kind action k
     | Some res ->
         cleanup := None;
-        ignore @@ Lwt_sequence.add_r (fun () ->
+        ignore @@ Lwt_dllist.add_r (fun () ->
           maybe_continue ctxt_node k res) gst.run_q
     | exception e ->
         cleanup := None;
-        ignore @@ Lwt_sequence.add_r (fun () ->
+        ignore @@ Lwt_dllist.add_r (fun () ->
           maybe_discontinue ctxt_node k e) gst.run_q
     end) seq;
   (* This needs to be run if the thread was cancelled. *)
-  cleanup := Some (fun () -> Lwt_sequence.remove !node)
+  cleanup := Some (fun () -> Lwt_dllist.remove !node)
 
 let do_syscall cleanup ctxt_node gst ch kind action k =
   match try_syscall ch kind action with
@@ -314,7 +314,7 @@ let block_sleep ctxt_node gst delay k =
   ignore @@ Lwt_engine.on_timer delay false (fun ev ->
     (* TODO: Should I stop immediately? *)
     Lwt_engine.stop_event ev;
-    ignore @@ Lwt_sequence.add_r (maybe_continue ctxt_node k) gst.run_q)
+    ignore @@ Lwt_dllist.add_r (maybe_continue ctxt_node k) gst.run_q)
 
 (* Promises *)
 
@@ -325,7 +325,7 @@ let finish gst prom v =
   | Waiting l ->
       prom := Done v;
       List.iter (fun (ctxt_node, k) ->
-        ignore @@ Lwt_sequence.add_r (fun () -> maybe_continue ctxt_node k v) gst.run_q) l
+        ignore @@ Lwt_dllist.add_r (fun () -> maybe_continue ctxt_node k v) gst.run_q) l
   | _ -> failwith "Impossible: finish"
 
 let abort gst prom e =
@@ -333,7 +333,7 @@ let abort gst prom e =
   | Waiting l ->
       prom := Error e;
       List.iter (fun (ctxt_node, k) ->
-        ignore @@ Lwt_sequence.add_r (fun () -> maybe_discontinue ctxt_node k e) gst.run_q) l
+        ignore @@ Lwt_dllist.add_r (fun () -> maybe_discontinue ctxt_node k e) gst.run_q) l
   | _ -> failwith "Impossible: abort"
 
 let force lst gst prom k =
@@ -389,7 +389,7 @@ end
 let tid_counter = ref 0
 
 let init () =
-  { run_q = Lwt_sequence.create ();
+  { run_q = Lwt_dllist.create ();
     num_async = 0 }
 
 let next_tid () =
@@ -401,7 +401,7 @@ let run ?engine main =
   begin match engine with
   | None -> ()
   | Some `Select -> Lwt_engine.set @@ new Lwt_engine.select
-  | Some `Libev -> Lwt_engine.set @@ new Lwt_engine.libev
+  | Some `Libev -> Lwt_engine.set @@ new Lwt_engine.libev ()
   end;
   let gst = init () in
   let rec fork : 'a. local_state -> global_state -> 'a promise -> (unit -> 'a) -> unit =
@@ -423,7 +423,7 @@ let run ?engine main =
       | effect Yield k when live lst.context ->
           let k = ref (Some k) in
           let ctxt_node = watch_for_cancellation lst k in
-          ignore @@ Lwt_sequence.add_r (maybe_continue ctxt_node k) gst.run_q;
+          ignore @@ Lwt_dllist.add_r (maybe_continue ctxt_node k) gst.run_q;
           schedule gst
       | effect (Async (f, v, c)) k when live lst.context ->
           let k = ref (Some k) in
@@ -434,7 +434,7 @@ let run ?engine main =
             | Some ctxt -> ctxt
           in
           let prom = mk_promise () in
-          ignore @@ Lwt_sequence.add_r (fun () -> maybe_continue ctxt_node k prom) gst.run_q;
+          ignore @@ Lwt_dllist.add_r (fun () -> maybe_continue ctxt_node k prom) gst.run_q;
           let lst =
             {cleanup = ref None;
              context = ctxt;
@@ -507,7 +507,7 @@ let run ?engine main =
           continue k lst.thread_id
       | effect Get_num_async k when live lst.context ->
           continue k gst.num_async
-      | effect e k when not(live lst.context) ->
+      | effect _ k when not(live lst.context) ->
           discontinue k Cancelled
   in
   let prom = mk_promise () in
