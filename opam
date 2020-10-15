@@ -18,5 +18,4 @@ depends: [
 ]
 depopts: []
 build: [
-  "ocaml" "pkg/pkg.ml" "build"
-          "--pinned" pinned ]
+  "dune" "build" ]
