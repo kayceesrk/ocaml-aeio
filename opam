@@ -7,16 +7,14 @@ license: "ISC"
 dev-repo: "https://github.com/kayceesrk/ocaml-aeio.git"
 bug-reports: "https://github.com/kayceesrk/ocaml-aeio/issues"
 tags: []
-available: [ ocaml-version >= "4.02.2"]
+available: [ ocaml-version >= "4.10.0"]
 depends: [
   "ocamlfind" {build}
   "ocamlbuild" {build}
-  "topkg" {build} 
-	"lwt"
+  "lwt"
   "lwt-dllist"
   "conf-libev"
 ]
 depopts: []
 build: [
-  "ocaml" "pkg/pkg.ml" "build"
-          "--pinned" pinned ]
+  "dune" "build" ]
