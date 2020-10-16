@@ -7,6 +7,7 @@ license: "ISC"
 dev-repo: "https://github.com/kayceesrk/ocaml-aeio.git"
 bug-reports: "https://github.com/kayceesrk/ocaml-aeio/issues"
 tags: []
+version: "0.3.0"
 available: [ ocaml-version >= "4.10.0"]
 depends: [
   "ocamlfind" {build}
@@ -17,4 +18,6 @@ depends: [
 ]
 depopts: []
 build: [
-  "dune" "build" ]
+  ["dune" "subst"] {pinned}
+  ["dune" "build" "-p" name "-j" jobs]
+]
