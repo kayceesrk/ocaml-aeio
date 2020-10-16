@@ -6,6 +6,7 @@
 
 (library
  (name aeio)
+ (public_name aeio)
  (foreign_stubs (language c) (names aeio_stubs))
  (modules aeio)
  (libraries lwt lwt.unix lwt-dllist))
