@@ -14,7 +14,6 @@ depends: [
   "ocamlbuild" {build}
   "lwt"
   "lwt-dllist"
-  "conf-libev"
 ]
 depopts: []
 build: [
