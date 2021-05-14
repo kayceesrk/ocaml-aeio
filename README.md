@@ -1,5 +1,8 @@
 aeio — Asynchronous effect-based IO
 -------------------------------------------------------------------------------
+This repository is no longer active. See the successor to `aeio`, [`eieio`](https://github.com/ocaml-multicore/eioio). 
+
+-------------------------------------------------------------------------------
 %%VERSION%%
 
 aeio is TODO
